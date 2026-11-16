@@ -232,6 +232,29 @@ class TestFullPass(Base):
                                 if p.suffix in (".csv", ".html") or p.name.startswith("2")), [])
 
 
+class TestExpectedVersion(Base):
+
+    def run_expecting(self, version):
+        r = Run(sim.Scenario())
+        self.addCleanup(r.cleanup)
+        cfg = json.loads(r.cfg.read_text())
+        cfg["expect"] = {"kodeos": version}
+        r.cfg.write_text(json.dumps(cfg))
+        return r.go()
+
+    def test_a_kode_with_another_kodeos_fails(self):
+        r = self.run_expecting("99.99.99")
+        res = r.results()
+        self.assertEqual(res["steps"]["info"]["status"], "FAIL", res["steps"]["info"])
+        self.assertIn("expects kodeOS 99.99.99", res["steps"]["info"]["measured"])
+        self.assertEqual(res["verdict"], "FAIL")
+
+    def test_the_expected_kodeos_passes(self):
+        seen = self.run_case(sim.Scenario()).results()["info"]["kodeos"]
+        r = self.run_expecting(seen)
+        self.assertEqual(r.results()["verdict"], "PASS")
+
+
 class TestNfc(Base):
 
     def test_a_failed_nfc_fails_the_kode(self):
@@ -321,6 +344,25 @@ class TestRelays(Base):
         steps = r.results()["steps"]
         for s in ("pads_gnd", "pads_loop", "pads_charge", "pads_delivery"):
             self.assertEqual(steps[s]["status"], "PASS", (s, steps[s]))
+
+    def test_the_charge_row_waits_for_the_charger_and_takes_a_full_cell(self):
+        # Near full, the charger starts again seconds after the 5 V reaches
+        # the pads: the first readings show no current, a later one does.
+        r = self.run_case(sim.Scenario("pass", pads_charger="slow"))
+        st = r.results()["steps"]["pads_charge"]
+        self.assertEqual(st["status"], "PASS", st)
+        self.assertGreaterEqual(len(r.sent("bat_info")), 4)
+        # A full cell takes no current at all: the charger says its charge is
+        # done, and the 5 V it sees on the pads is the proof the row is after.
+        r = self.run_case(sim.Scenario("pass", pads_charger="full"))
+        st = r.results()["steps"]["pads_charge"]
+        self.assertEqual(st["status"], "PASS", st)
+        self.assertIn("charge done", st["measured"])
+        # No current and no charge done is still a failure, after the wait.
+        r = self.run_case(sim.Scenario("pass", pads_charger="idle"))
+        st = r.results()["steps"]["pads_charge"]
+        self.assertEqual(st["status"], "FAIL", st)
+        self.assertIn("current_ma=-4", st["measured"])
 
 
 class TestRefusal(Base):
